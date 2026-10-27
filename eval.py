@@ -22,29 +22,32 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # Configuration flags
+# Settings read with os.getenv can be overridden with an env var of the same name (used by grace_rl_sweep.slurm)
 
 # Model settings
-MODEL = GRANITE # Options: GRANITE | QWEN
-LOAD_SPECIFIC_MODEL = False
-MODEL_CHECKPOINT_PATH = "sft_rl_medmcqa_abstention_qwen_chk300_model_idk_plus_0/checkpoint-90" # only useful if loading specific model
+MODEL = os.getenv("MODEL", GRANITE) # Options: GRANITE | QWEN, or short names "granite" | "qwen"
+MODEL = constants.MODELS.get(MODEL, MODEL)
+LOAD_SPECIFIC_MODEL = os.getenv("LOAD_SPECIFIC_MODEL", "false").lower() == "true"
+MODEL_CHECKPOINT_PATH = os.getenv("MODEL_CHECKPOINT_PATH", "sft_rl_medmcqa_abstention_qwen_chk300_model_idk_plus_0/checkpoint-90") # only useful if loading specific model
 MODEL_CHECKPOINT_PATH_1 = None     # Another checkpoint path Eg: RL over SFT
 if LOAD_SPECIFIC_MODEL:
-    EVAL_TYPE = SFT # SFT | RL | SFT_RL. This will only affect the output file name
+    EVAL_TYPE = os.getenv("EVAL_TYPE", SFT) # SFT | RL | SFT_RL. This will only affect the output file name
 else:
     EVAL_TYPE = BASELINE
+RUN_TAG = os.getenv("RUN_TAG", "") # appended to the output name so sweep runs don't overwrite each other
 
 # Data settings
-DATA = MATH # MEDMCQA | GSM8K | MATH
+DATA = os.getenv("DATA", MATH) # Options: medmcqa | gsm8k | hendrycks_math
 IDK_ENABLED = True  # Toggle IDK option in dataset
 EVAL_ON = TEST # always keep this test dataset for eval unless really necessary
-NUM_SAMPLES = 40000
+NUM_SAMPLES = int(os.getenv("NUM_SAMPLES", 40000))
 os.environ["DATA"] = DATA
 os.environ["IDK_ENABLED"] = "true" if IDK_ENABLED else "false"
 os.environ["EVAL_TYPE"] = EVAL_TYPE
 
 # parallel processing and checkpointing
 USE_BATCH_PROCESSING = True  # Toggle between batch and sequential processing
-BATCH_SIZE = 32
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 32))
 LOAD_CHECKPOINT = False
 CHECKPOINT_INTERVAL_HOURS = 2  # Checkpoint interval in hours
 CHECKPOINT_DIR = "eval_checkpoints"  # Directory to save checkpoints
@@ -69,7 +72,7 @@ logger.info("Tokenizer loaded")
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-model = AutoModelForCausalLM.from_pretrained(MODEL)
+model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype="auto")
 logger.info("Base model loaded")
 if LOAD_SPECIFIC_MODEL:
     model = PeftModelForCausalLM.from_pretrained(model, MODEL_CHECKPOINT_PATH)
@@ -185,7 +188,7 @@ else:
 # Save final output
 out_ds = datasets.Dataset.from_list(final_records)
 idk_suffix = "_idk" if IDK_ENABLED else ""
-EVAL_DATA_NAME = f"eval_outputs/{EVAL_TYPE}_{MODEL}_{DATA}_{NUM_SAMPLES}_{(f'{NUM_OPTIONS}option' if NUM_OPTIONS else 'numeric')}{idk_suffix}"
+EVAL_DATA_NAME = f"eval_outputs/{EVAL_TYPE}_{MODEL}_{DATA}_{NUM_SAMPLES}_{(f'{NUM_OPTIONS}option' if NUM_OPTIONS else 'numeric')}{idk_suffix}{f'_{RUN_TAG}' if RUN_TAG else ''}"
 
 out_ds.save_to_disk(EVAL_DATA_NAME)
 logger.info(f"Final evaluation results saved to: {EVAL_DATA_NAME}")

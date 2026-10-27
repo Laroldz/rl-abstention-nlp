@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from constants import LOGGING_FORMAT, DATE_FORMAT
 from utils import extract_answer
@@ -9,9 +10,11 @@ logging.basicConfig(
     datefmt=DATE_FORMAT)
 logger = logging.getLogger()
 
-CORRECT_ANSWER_REWARD = 1
-IDK_ANSWER_REWARD = 0
-INCORRECT_ANSWER_REWARD = -1
+# Override via env vars for reward sweeps (see grace_rl_sweep.slurm)
+CORRECT_ANSWER_REWARD = float(os.getenv("CORRECT_REWARD", 1))
+IDK_ANSWER_REWARD = float(os.getenv("IDK_REWARD", 0))
+INCORRECT_ANSWER_REWARD = float(os.getenv("INCORRECT_REWARD", -1))
+logger.info("Rewards: correct=%s idk=%s incorrect=%s", CORRECT_ANSWER_REWARD, IDK_ANSWER_REWARD, INCORRECT_ANSWER_REWARD)
 
 
 def format_reward(completions, **kwargs):

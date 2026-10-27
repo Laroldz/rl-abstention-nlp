@@ -15,3 +15,7 @@ wheels/
 *.key
 *.crt
 .idea
+
+# offline data / model cache for Grace
+medmcqa_*.csv
+hf_cache/

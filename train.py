@@ -20,28 +20,42 @@ logger = logging.getLogger()
 
 # ======================== CONFIGURATION ========================
 
+# Every setting below can be overridden with an env var of the same name (used by grace_rl_sweep.slurm)
+
 # Training type: RL (GRPO) or SFT (Supervised Fine-Tuning)
-TRAINING_TYPE = RL  # Options: RL, SFT
+TRAINING_TYPE = os.getenv("TRAINING_TYPE", RL)  # Options: rl, sft
 
 # Model configuration
-BASE_MODEL = GRANITE  # Options: GRANITE | QWEN
+BASE_MODEL = os.getenv("BASE_MODEL", GRANITE)  # Options: GRANITE | QWEN, or short names "granite" | "qwen"
+BASE_MODEL = constants.MODELS.get(BASE_MODEL, BASE_MODEL)
 LOAD_SPECIFIC_MODEL = False  # If True, load and merge a specific checkpoint
 MODEL_CHECKPOINT_PATH = "sft_hendrycks_math_ibm-granite/checkpoint-950"  # Path to checkpoint (only used if LOAD_SPECIFIC_MODEL=True)
 MODEL_CHECKPOINT_PATH_1 = None     # Another checkpoint path Eg: RL over SFT
 
 # Dataset configuration
-DATA = MATH  # Options: MEDMCQA | GSM8K | MATH
+DATA = os.getenv("DATA", MATH)  # Options: medmcqa | gsm8k | hendrycks_math
 IDK_ENABLED = True  # Toggle IDK option in dataset. Mostly True in train.py
 os.environ["DATA"] = DATA
 os.environ["IDK_ENABLED"] = "true" if IDK_ENABLED else "false"
 os.environ["TRAINING_TYPE"] = TRAINING_TYPE
 
+# RL settings
+MAX_STEPS = int(os.getenv("MAX_STEPS", 500))
+VLLM_GPU_MEM = float(os.getenv("VLLM_GPU_MEM", 0.5))
+# Completions per forward/backward pass x accumulation = completions per update (default 8 x 64 = 512).
+# Lower PER_DEVICE_BATCH and raise GRAD_ACCUM by the same factor to save memory without changing training.
+PER_DEVICE_BATCH = int(os.getenv("PER_DEVICE_BATCH", 8))
+GRAD_ACCUM = int(os.getenv("GRAD_ACCUM", 64))
+
 # Output configuration
 # OUTPUT_DIR = "rl_medmcqa_abstention"  # Directory to save model checkpoints and final model
-OUTPUT_DIR = "_".join([TRAINING_TYPE.lower(), DATA, BASE_MODEL.split("/")[0]])
+DEFAULT_OUTPUT_DIR = "_".join([TRAINING_TYPE.lower(), DATA, BASE_MODEL.split("/")[0]])
+if os.getenv("IDK_REWARD") is not None:
+    DEFAULT_OUTPUT_DIR += f"_idk{os.getenv('IDK_REWARD')}"
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", DEFAULT_OUTPUT_DIR)
 
 # Resume training configuration
-RESUME_FROM_CHECKPOINT = False  # If True, resume training from last checkpoint in OUTPUT_DIR
+RESUME_FROM_CHECKPOINT = os.getenv("RESUME_FROM_CHECKPOINT", "false").lower() == "true"  # If True, resume training from last checkpoint in OUTPUT_DIR
 # Alternatively, set to a specific checkpoint path string: "rl_medmcqa_abstention/checkpoint-100"
 
 # ======================== LOAD MODEL ========================
@@ -49,7 +63,7 @@ RESUME_FROM_CHECKPOINT = False  # If True, resume training from last checkpoint 
 logger.info(f"Loading base model: {BASE_MODEL} (type: LORA)")
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 
-model = AutoModelForCausalLM.from_pretrained(BASE_MODEL)
+model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, torch_dtype="auto")  # bf16 for Qwen3; fp32 won't fit next to vLLM on a 40GB A100
 if LOAD_SPECIFIC_MODEL:
     logger.info(f"Loading specific model checkpoint: {MODEL_CHECKPOINT_PATH}")
     model = PeftModelForCausalLM.from_pretrained(model, MODEL_CHECKPOINT_PATH).merge_and_unload()
@@ -134,10 +148,10 @@ if TRAINING_TYPE == RL:
         remove_unused_columns=False,
 
         # Gradient accumulation: accumulate gradients over N steps before updating
-        gradient_accumulation_steps=64,
+        gradient_accumulation_steps=GRAD_ACCUM,
 
         # Maximum number of training steps
-        max_steps=500,
+        max_steps=MAX_STEPS,
 
         # Enable gradient checkpointing to reduce memory usage
         gradient_checkpointing=True,
@@ -149,7 +163,7 @@ if TRAINING_TYPE == RL:
         num_generations=8,
 
         # Batch size per GPU for training
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=PER_DEVICE_BATCH,
 
         # Batch size per GPU for evaluation
         per_device_eval_batch_size=8,
@@ -177,7 +191,7 @@ if TRAINING_TYPE == RL:
         # Use vLLM for faster inference during generation
         use_vllm=True,
         vllm_mode="colocate",  # Colocate vLLM with training process
-        vllm_gpu_memory_utilization=0.5,  # Use 50% of GPU memory for vLLM
+        vllm_gpu_memory_utilization=VLLM_GPU_MEM,  # Fraction of GPU memory for vLLM
 
         # Sampling parameters for generation
         top_k=40,  # Sample from top-k tokens
@@ -188,8 +202,8 @@ if TRAINING_TYPE == RL:
         epsilon_high=0.28,  # Upper bound for adaptive KL
         scale_rewards=False,  # Don't normalize rewards
 
-        # Weights for multiple reward functions [format_reward, accuracy_reward]
-        reward_weights=[1, 2],
+        # Weights for multiple reward functions [format_reward, accuracy_reward]; MATH uses accuracy_reward only
+        reward_weights=[2] if DATA == MATH else [1, 2],
 
         # Clear CUDA cache every N steps to prevent OOM
         torch_empty_cache_steps=1,
@@ -208,6 +222,7 @@ if TRAINING_TYPE == RL:
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
+            peft_config=lora_config,
         )
     else:
         trainer = GRPOTrainer(
@@ -216,6 +231,7 @@ if TRAINING_TYPE == RL:
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
+            peft_config=lora_config,
         )
 
 elif TRAINING_TYPE == SFT:

@@ -1,7 +1,7 @@
 import pandas as pd
 import logging
 from datasets import load_dataset, DatasetDict, Dataset, load_from_disk
-from constants import LOGGING_FORMAT, DATE_FORMAT, TRAIN, VAL, TEST, SFT, IDK_PHRASES, MEDMCQA, MEDMCQA_DATA, GSM8K, GSM8K_DATA, MATH, MATH_DATA
+from constants import LOGGING_FORMAT, DATE_FORMAT, TRAIN, VAL, TEST, SFT, IDK_PHRASES, MEDMCQA, MEDMCQA_DATA, MEDMCQA_CSV, GSM8K, GSM8K_DATA, MATH, MATH_DATA
 import kagglehub
 import re
 from datasets import concatenate_datasets
@@ -128,6 +128,18 @@ CRITICAL FORMATTING REQUIREMENTS:
         result['idk_answer'] = "\text{IDK}"
     return result
 
+def load_medmcqa_split(split):
+    """Load an official MedMCQA split from medmcqa_<split>.csv if present (offline), else from Hugging Face.
+    Note: the official test split is unlabeled (cop == -1), so only train is used for training/eval."""
+    path = MEDMCQA_CSV.format(split=split)
+    if not os.path.isfile(path):
+        return load_dataset(MEDMCQA_DATA, split=split)
+    # read everything as str so options like "5" or "NA" aren't turned into numbers / NaN
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df['cop'] = df['cop'].astype(int)
+    logger.info(f"Loaded {len(df)} MedMCQA {split} rows from {path}")
+    return Dataset.from_pandas(df, preserve_index=False)
+
 def get_medmcqa_data(idk_enabled=False):
     TRAINING_TYPE = os.getenv("TRAINING_TYPE") or os.getenv("EVAL_TYPE")
     if TRAINING_TYPE is not None and TRAINING_TYPE == SFT:
@@ -139,7 +151,7 @@ def get_medmcqa_data(idk_enabled=False):
         # Train=146037, Validation=220, Test=36565
         return get_data(ds, lambda x: process_example_medmcqa(x, idk_enabled),
                         train_size=0.7988, val_size=0.0012, test_size=0.20)
-    ds = load_dataset(MEDMCQA_DATA, split=TRAIN)
+    ds = load_medmcqa_split(TRAIN)
     # Split sizes: train=79.88%, val=0.12%, test=20%
     # Train=146037, Validation=220, Test=36565
     return get_data(ds, lambda x: process_example_medmcqa(x, idk_enabled),
